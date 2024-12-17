@@ -1,16 +1,11 @@
 from dataclasses import dataclass
 from typing import Callable, Literal
-import os
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 from solvers.ivp import RKSolver, AdamsSolver
 from solvers.root_finding import SecantSolver, NewtonSolver
-from solvers.interpolation import HermiteInterpolation
-
-os.environ['TCL_LIBRARY'] = \
-    r'C:\Users\jubilant\AppData\Local\Programs\Python\Python313/tcl/tcl8.6'
+from solvers.interpolation import HermiteInterpolator
 
 
 @dataclass
@@ -27,7 +22,7 @@ class CrossingGroundSolver:
     def __init__(self,
                  step: float = 1e-2,
                  ode_method: Literal['RK', 'Adams'] = 'Adams',
-                 root_method: Literal['Secant', 'Newton'] = 'Secant',
+                 root_method: Literal['Secant', 'Newton'] = 'Newton',
                  conditions: Conditions | None = None):
         self.step = step
         self._conditions = None
@@ -108,10 +103,10 @@ class CrossingGroundSolver:
         ts, xs = self.ode_solution
         ts, xs = ts[-2:], xs[:, -2:]
 
-        interp1 = HermiteInterpolation.from_2p2v(ts[0], xs[0, 0], xs[2, 0],
-                                                 ts[1], xs[0, 1], xs[2, 1])
-        interp2 = HermiteInterpolation.from_2p2v(ts[0], xs[1, 0], xs[3, 0],
-                                                 ts[1], xs[1, 1], xs[3, 1])
+        interp1 = HermiteInterpolator.from_2p2v(ts[0], xs[0, 0], xs[2, 0],
+                                                ts[1], xs[0, 1], xs[2, 1])
+        interp2 = HermiteInterpolator.from_2p2v(ts[0], xs[1, 0], xs[3, 0],
+                                                ts[1], xs[1, 1], xs[3, 1])
 
         t1, t2 = ts[0], ts[1]
         xs = [np.asarray([xs[0, 0], xs[1, 0]]),
@@ -146,24 +141,7 @@ def main():
         )
     solver = CrossingGroundSolver()
     solver.conditions = cond
-
-    if solver.solve():
-        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-
-        ts, xs = solver.ode_solution
-        ax[0].plot(xs[0], xs[1])
-        ax[0].plot(xs[0], cond.mu(xs[0]))
-        ax[0].scatter(solver.crossing[1], solver.crossing[2])
-        ax[0].set_title(
-            f'Пересечение в \n({solver.crossing[1]}, {solver.crossing[2]})')
-
-        ts, xs = solver.root_solution
-        ax[1].plot(xs[0], xs[1])
-        ax[1].plot(xs[0], cond.mu(xs[0]))
-        ax[1].scatter(solver.crossing[1], solver.crossing[2])
-        ax[1].set_title(f'Порядок точности $h^4 = {solver.step ** 4}$')
-
-        plt.show()
+    solver.solve()
 
 
 if __name__ == '__main__':
