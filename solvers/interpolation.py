@@ -111,7 +111,7 @@ class LocalPolynomialInterpolator(InterpolatorBase):
             if ts[i] < nodes[0]:
                 res.append(self._intp_dict[nodes[0]](ts[i])[0])
                 continue
-            for j in range(len(nodes)):
+            for j in range(1, len(nodes)):
                 if ts[i] < nodes[j]:
                     res.append(self._intp_dict[nodes[j-1]](ts[i])[0])
                     break
