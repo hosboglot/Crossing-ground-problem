@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 
@@ -24,16 +24,22 @@ class Conditions:
     m: float
     k: float
     mu: Callable[[float], float]
-    mu_d: Callable[[float], float] | None = None
+    mu_d: Callable[[float], float] | None = None,
+    mu_d2: Callable[[float], float] | None = None
     g: float = 9.8
 
 
 class FindAngleSolver:
     def __init__(self,
                  step: float = 1e-2,
-                 conditions: Conditions | None = None):
+                 conditions: Conditions | None = None,
+                 local_estimator: Literal['Lagrange', 'Hermite'] = 'Lagrange',
+                 **cg_solver_kwargs):
         self.step = step
         self._conditions = conditions
+        self.local_estimator = local_estimator
+        self._cg_kwargs = cg_solver_kwargs
+
         self._cg_evaluations: dict[float, tuple[float, float, float]] = {}
         'Dict for storing CG evaluations (angle: [t, x1, x2])'
         self._crossing_estimator: InterpolatorBase | None = None
@@ -69,7 +75,7 @@ class FindAngleSolver:
 
     def _solve_est1(self):
         def f(t: float):
-            return self._crossing_estimator(t)[1] - self.conditions.x_cross
+            return self._crossing_estimator(t) - self.conditions.x_cross
 
         nodes = sorted(self._cg_evaluations.keys())
         t1, t2 = -np.pi/2, np.pi/2
@@ -100,7 +106,7 @@ class FindAngleSolver:
             self.solution_est2.append(t2)
 
     def _build_estimator(self):
-        angles = np.linspace(-np.pi/2, np.pi/2, 16)
+        angles = np.linspace(-np.pi/2, np.pi/2, 16, endpoint=True)
         crossings = np.empty((angles.shape[0], 3))
         for i, angle in enumerate(angles):
             cgsolver = self._cg_from_angle(angle)
@@ -108,7 +114,7 @@ class FindAngleSolver:
             crossings[i] = np.asarray(cgsolver.crossing)
             self._cg_evaluations[angle] = cgsolver.crossing
         self._crossing_estimator = LocalPolynomialInterpolator.from_points(
-            angles, crossings
+            angles, crossings[:, 1], self.local_estimator
         )
 
     def _cg_from_angle(self, angle: float):
@@ -122,8 +128,10 @@ class FindAngleSolver:
                     k=self.conditions.k,
                     mu=self.conditions.mu,
                     mu_d=self.conditions.mu_d,
+                    mu_d2=self.conditions.mu_d2,
                     g=self.conditions.g
-                ))
+                ),
+                **self._cg_kwargs)
 
 
 def main():

@@ -1,3 +1,4 @@
+from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
@@ -65,7 +66,7 @@ class LagrangeInterpolator(InterpolatorBase):
         if self._coefs.ndim > 1:
             f3 = np.sum(f2[:, :, None] * self._coefs, axis=1)
         else:
-            f3 = np.sum(f2 * self._coefs, axis=1)
+            f3 = np.sum(f2 * self._coefs, axis=1)[0]
         return f3
 
     @classmethod
@@ -87,36 +88,35 @@ class LagrangeInterpolator(InterpolatorBase):
 
 class LocalPolynomialInterpolator(InterpolatorBase):
     """
-        Local polynomial interpolation,
-        based on Lagrange interpolator of 3rd order
+        Local polynomial interpolation
     """
-    def __init__(self, interpolator_dict: dict[float, LagrangeInterpolator]):
+    def __init__(self, interpolator_dict: dict[float, InterpolatorBase]):
         self._intp_dict = interpolator_dict
 
     def __call__(self, ts: np.float64) -> npt.ArrayLike:
         if np.ndim(ts) == 0:
             nodes = sorted(self._intp_dict.keys())
             if ts < nodes[0]:
-                return self._intp_dict[nodes[0]](ts)[0]
+                return self._intp_dict[nodes[0]](ts)
             for j in range(len(nodes)):
                 if ts < nodes[j]:
-                    return self._intp_dict[nodes[j-1]](ts)[0]
+                    return self._intp_dict[nodes[j-1]](ts)
             else:
-                return self._intp_dict[nodes[-1]](ts)[0]
+                return self._intp_dict[nodes[-1]](ts)
 
         ts = np.asarray(ts)
         res = []
         nodes = sorted(self._intp_dict.keys())
         for i in range(len(ts)):
             if ts[i] < nodes[0]:
-                res.append(self._intp_dict[nodes[0]](ts[i])[0])
+                res.append(self._intp_dict[nodes[0]](ts[i]))
                 continue
             for j in range(1, len(nodes)):
                 if ts[i] < nodes[j]:
-                    res.append(self._intp_dict[nodes[j-1]](ts[i])[0])
+                    res.append(self._intp_dict[nodes[j-1]](ts[i]))
                     break
             else:
-                res.append(self._intp_dict[nodes[-1]](ts[i])[0])
+                res.append(self._intp_dict[nodes[-1]](ts[i]))
         return np.asarray(res)
 
     @property
@@ -127,10 +127,19 @@ class LocalPolynomialInterpolator(InterpolatorBase):
         return LocalPolynomialInterpolator(res_dict)
 
     @classmethod
-    def from_points(cls, ts: npt.ArrayLike, xs: npt.ArrayLike):
+    def from_points(cls, ts: npt.ArrayLike, xs: npt.ArrayLike,
+                    base_method: Literal['Lagrange', 'Hermite'] = 'Lagrange'):
+        if base_method.lower() == 'hermite':
+            return LocalPolynomialInterpolator._from_points_hermite(ts, xs)
+        else:
+            return LocalPolynomialInterpolator._from_points_lagrange(ts, xs)
+
+    @classmethod
+    def _from_points_lagrange(cls, ts: npt.ArrayLike, xs: npt.ArrayLike):
         """
             n points, m values at each
-            ts.shape == (n,), xs.shape == (n,) or (n, m)
+            ts.shape == (n,), xs.shape == (n,) or (n, m) \\
+            Based on Lagrange interpolator of 3rd order
         """
         ts = np.asarray(ts)
         xs = np.asarray(xs)
@@ -138,12 +147,39 @@ class LocalPolynomialInterpolator(InterpolatorBase):
             return LocalPolynomialInterpolator(
                 {0: LagrangeInterpolator.from_points(ts, xs)})
 
-        intp_dict = {}
-        intp_dict[ts[0]] = LagrangeInterpolator.from_points(ts[:3], xs[:3])
-        intp_dict[ts[-1]] = LagrangeInterpolator.from_points(ts[-3:], xs[-3:])
-        for i in range(1, len(ts)-1):
+        intp_dict = {ts[0]: LagrangeInterpolator.from_points(ts[:3], xs[:3])}
+        for i in range(1, len(ts) - 1):
             intp_dict[ts[i]] = LagrangeInterpolator.from_points(
                 ts[i-1:i+3], xs[i-1:i+3])
+
+        return LocalPolynomialInterpolator(intp_dict)
+
+    @classmethod
+    def _from_points_hermite(cls, ts: npt.ArrayLike, xs: npt.ArrayLike):
+        """
+            n points, value at each \\
+            derivative is approximated from near points \\
+            Based on Lagrange interpolator of 3rd order
+        """
+        ts = np.asarray(ts)
+        xs = np.asarray(xs)
+        if len(ts) <= 2:
+            return LocalPolynomialInterpolator(
+                {0: LagrangeInterpolator.from_points(ts, xs)})
+
+        intp_dict = {
+            ts[0]: HermiteInterpolator.from_2p2v(
+                ts[0], xs[0], (xs[1] - xs[0]) / (ts[1] - ts[0]),
+                ts[1], xs[1], (xs[2] - xs[0]) / (ts[2] - ts[0])),
+            ts[-2]: HermiteInterpolator.from_2p2v(
+                ts[-2], xs[-2], (xs[-1] - xs[-3]) / (ts[-1] - ts[-3]),
+                ts[-1], xs[-1], (xs[-1] - xs[-2]) / (ts[-1] - ts[-2])
+            )}
+        for i in range(1, len(ts) - 2):
+            intp_dict[ts[i]] = HermiteInterpolator.from_2p2v(
+                ts[i], xs[i], (xs[i+1] - xs[i-1]) / (ts[i+1] - ts[i-1]),
+                ts[i+1], xs[i+1], (xs[i+2] - xs[i]) / (ts[i+2] - ts[i])
+            )
 
         return LocalPolynomialInterpolator(intp_dict)
 
