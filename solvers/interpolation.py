@@ -167,18 +167,21 @@ class LocalPolynomialInterpolator(InterpolatorBase):
             return LocalPolynomialInterpolator(
                 {0: LagrangeInterpolator.from_points(ts, xs)})
 
+        # TODO: derivatives approximated with central scheme should be divided by 2*h
         intp_dict = {
             ts[0]: HermiteInterpolator.from_2p2v(
                 ts[0], xs[0], (xs[1] - xs[0]) / (ts[1] - ts[0]),
-                ts[1], xs[1], (xs[2] - xs[0]) / (ts[2] - ts[0])),
+                ts[1], xs[1], (xs[2] - xs[0]) / (2 * (ts[2] - ts[0]))
+                ),
             ts[-2]: HermiteInterpolator.from_2p2v(
-                ts[-2], xs[-2], (xs[-1] - xs[-3]) / (ts[-1] - ts[-3]),
+                ts[-2], xs[-2], (xs[-1] - xs[-3]) / (2 * (ts[-1] - ts[-3])),
                 ts[-1], xs[-1], (xs[-1] - xs[-2]) / (ts[-1] - ts[-2])
-            )}
+                )
+            }
         for i in range(1, len(ts) - 2):
             intp_dict[ts[i]] = HermiteInterpolator.from_2p2v(
-                ts[i], xs[i], (xs[i+1] - xs[i-1]) / (ts[i+1] - ts[i-1]),
-                ts[i+1], xs[i+1], (xs[i+2] - xs[i]) / (ts[i+2] - ts[i])
+                ts[i], xs[i], (xs[i+1] - xs[i-1]) / (2 * (ts[i+1] - ts[i-1])),
+                ts[i+1], xs[i+1], (xs[i+2] - xs[i]) / (2 * (ts[i+2] - ts[i]))
             )
 
         return LocalPolynomialInterpolator(intp_dict)
