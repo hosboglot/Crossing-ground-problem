@@ -33,10 +33,12 @@ class FindAngleSolver:
     def __init__(self,
                  step: float = 1e-2,
                  conditions: Conditions | None = None,
-                 local_estimator: Literal['Lagrange', 'Hermite'] = 'Lagrange',
+                 nodes_n: float = 16,
+                 local_estimator: Literal['Lagrange', 'Hermite'] | None = 'Lagrange',
                  **cg_solver_kwargs):
         self.step = step
         self._conditions = conditions
+        self.nodes_n = nodes_n
         self.local_estimator = local_estimator
         self._cg_kwargs = cg_solver_kwargs
 
@@ -48,6 +50,13 @@ class FindAngleSolver:
         'Step by step progress of first estimation'
         self.solution_est2 = []
         'Step by step progress of second estimation'
+
+    def __repr__(self) -> str:
+        return "FASolver(" \
+              f"step={self.step!r}, " \
+              f"nodes_n={self.nodes_n!r}, " \
+              f"local_estimator={self.local_estimator!r}" \
+               ")"
 
     @property
     def conditions(self):
@@ -65,27 +74,30 @@ class FindAngleSolver:
             else self.solution_est1[-1]
 
     def solve(self):
-        if not self._crossing_estimator:
-            self._build_estimator()
+        self._build_estimator()
+        self._find_segment()
 
-        self._solve_est1()
+        if self.local_estimator:
+            self._solve_est1()
         self._solve_est2()
 
         return True
 
-    def _solve_est1(self):
-        def f(t: float):
-            return self._crossing_estimator(t) - self.conditions.x_cross
-
+    def _find_segment(self):
         nodes = sorted(self._cg_evaluations.keys())
         t1, t2 = -np.pi/2, np.pi/2
         for i in range(1, len(nodes)):
             if self.conditions.x_cross < self._cg_evaluations[nodes[i]][1]:
                 t1, t2 = nodes[i-1], nodes[i]
                 break
-
-        solver = SecantSolver(f, t1, t2)
         self.solution_est1 = [t1, t2]
+
+    def _solve_est1(self):
+        def f(t: float):
+            return self._crossing_estimator(t) - self.conditions.x_cross
+
+        t1, t2 = self.solution_est1[-2:]
+        solver = SecantSolver(f, t1, t2)
 
         while abs(t2 - t1) > self.step ** 2:
             t1, t2 = solver.step()
@@ -106,16 +118,18 @@ class FindAngleSolver:
             self.solution_est2.append(t2)
 
     def _build_estimator(self):
-        angles = np.linspace(-np.pi/2, np.pi/2, 16, endpoint=True)
+        angles = np.linspace(-np.pi/2, np.pi/2, self.nodes_n, endpoint=True)
         crossings = np.empty((angles.shape[0], 3))
         for i, angle in enumerate(angles):
             cgsolver = self._cg_from_angle(angle)
             cgsolver.solve()
             crossings[i] = np.asarray(cgsolver.crossing)
             self._cg_evaluations[angle] = cgsolver.crossing
-        self._crossing_estimator = LocalPolynomialInterpolator.from_points(
-            angles, crossings[:, 1], self.local_estimator
-        )
+
+        if self.local_estimator:
+            self._crossing_estimator = LocalPolynomialInterpolator.from_points(
+                angles, crossings[:, 1], self.local_estimator
+            )
 
     def _cg_from_angle(self, angle: float):
         return CrossingGroundSolver(
@@ -143,7 +157,7 @@ def main():
         k=3,
         mu=lambda t: np.sin(t)
         )
-    solver = FindAngleSolver()
+    solver = FindAngleSolver(step=0.05)
     solver.conditions = cond
     solver.solve()
 

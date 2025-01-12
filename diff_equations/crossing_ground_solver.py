@@ -42,9 +42,9 @@ class CrossingGroundSolver:
 
     def __repr__(self) -> str:
         return "CGSolver(" \
-              f"step='{self.step}', " \
-              f"ode_method='{self.ode_method}', " \
-              f"root_method='{self.root_method}'" \
+              f"step={self.step!r}, " \
+              f"ode_method={self.ode_method!r}, " \
+              f"root_method={self.root_method!r}" \
                ")"
 
     @property
