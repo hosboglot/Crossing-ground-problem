@@ -64,6 +64,12 @@ class CrossingGroundSolver:
             np.hstack((self._ode_solution[1], self._root_solution[1]))
 
     @property
+    def smooth_solution(self):
+        '''Returns ts, xs for smooth solution, starting at x0 and ending at crossing'''
+        return np.hstack((self._ode_solution[0][:-1], self._root_solution[0][-1:])), \
+            np.hstack((self._ode_solution[1][:, :-1], self._root_solution[1][:, -1:]))
+
+    @property
     def crossing(self) -> tuple[float, float, float]:
         '''Returns t, x1, x2'''
         return self._crossing
@@ -200,8 +206,8 @@ class BouncingCGSolver:
                 break
             counter += 1
             self._solution = (
-                np.hstack((self._solution[0], solver.solution[0][:-1])),
-                np.hstack((self._solution[1], solver.solution[1][:, :-1]))
+                np.hstack((self._solution[0], solver.smooth_solution[0][:-1])),
+                np.hstack((self._solution[1], solver.smooth_solution[1][:, :-1]))
                 )
 
             last_t, last_x = solver.solution
