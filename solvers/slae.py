@@ -146,6 +146,18 @@ class preconditioners:
                 y = scipy.sparse.linalg.spsolve_triangular(self.B2, y, lower=False)
             return y
 
+    class Multigrid(PreconditionerBase):
+        def __init__(self, n_layers: int = 1,
+                     cycle: Literal['V', 'F', 'W'] = 'V',
+                     smoother: Union['preconditioners.PreconditionerBase', None] = None):
+            self.n_layers = n_layers
+            self.cycle = cycle
+            self.smoother = smoother or preconditioners.Jacobi(1, 1)
+        def init(self, A: ssparse.sparray):
+            pass
+        def solve(self, b: np.ndarray):
+            pass
+
 
 if __name__ == "__main__":
     solver = CG(
