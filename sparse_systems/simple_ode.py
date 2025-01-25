@@ -93,8 +93,8 @@ class SimpleOdeFEM:
     def _build_boundaries(self, A: ssparse.dok_array, F: np.ndarray):
         # left boundary Neumann conditions
         if isinstance(self.conditions.left, (tuple, list)):
-            A[0, 0] = self.conditions.left[0]
-            F[0] = self.conditions.left[1]
+            A[0, 0] += self.conditions.left[0]
+            F[0] += self.conditions.left[1]
         # Dirichlet conditions
         else:
             F = F - self.conditions.left * A[:, 0].toarray()
@@ -103,8 +103,8 @@ class SimpleOdeFEM:
 
         # right boundary Neumann conditions
         if isinstance(self.conditions.right, (tuple, list)):
-            A[-1, -1] = self.conditions.right[0]
-            F[-1] = self.conditions.right[1]
+            A[-1, -1] += self.conditions.right[0]
+            F[-1] += self.conditions.right[1]
         # Dirichlet conditions
         else:
             F = F - self.conditions.right * A[:, -1].toarray()
