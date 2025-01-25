@@ -148,17 +148,24 @@ class SimpleOdeFEM:
         return res
 
 def main():
-    exact_func = lambda x: np.sin(x)
-    cond = Conditions(
-        a=lambda x: 1,
-        b=lambda x: 2,
-        f=lambda x: 3 * np.sin(x),
-        x_0=0,
-        x_n=1,
-        left=exact_func(0),
-        right=exact_func(1)
+    exact_func = lambda x: np.sin(x) * np.cos(2*x)
+
+    solver = SimpleOdeFEM(
+        conditions=Conditions(
+            a=lambda x: 1,
+            b=lambda x: 0,
+            f=lambda x: 4 * np.sin(3*x) + np.sin(x) * np.cos(2*x),
+            x_0=0,
+            x_n=1,
+            left=[1, 0],
+            right=exact_func(1)
+        ),
+        n=100,
+        slae_solver=CG(
+            preconditioners.SOR(1, 1),
+            max_it=200
+        )
     )
-    solver = SimpleOdeFEM(cond, 1000, 'jacobi')
     solver.solve()
     
     print(solver.slae_solver.iterations)
