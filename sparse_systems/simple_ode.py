@@ -4,7 +4,7 @@ from typing import Callable, Literal
 import numpy as np
 import scipy.sparse as ssparse
 
-from solvers.slae import CG
+from solvers.slae import CG, preconditioners
 
 
 @dataclass
@@ -12,23 +12,27 @@ class Conditions:
     """
         Simple 1D ODE defined as                            \\
         -(a(x)u'(x))' + b(x)u(x) = f(x), x \\in (x_0, x_n)  \\
-        u(x_0) = u_0                                        \\
-        u(x_n) = u_n
+
+        Left and right are boundary conditions                          \\
+        If a float, then considered Dirichlet condition                 \\
+        If a tuple of two floats, then considered Neumann               \\
+        u(x_0) = left or left[0]*u(x_0) - a(x_0)*u'(x_0) = left[1]      \\
+        u(x_n) = right or right[0]*u(x_n) + a(x_n)*u'(x_n) = right[1]   \\
     """
     a: Callable[[float], float]
     b: Callable[[float], float]
     f: Callable[[float], float]
     x_0: float
     x_n: float
-    u_0: float
-    u_n: float
+    left: float | tuple[float, float]
+    right: float | tuple[float, float]
 
 
 class SimpleOdeFEM:
     def __init__(self, conditions: Conditions, n: int = 10,
-                 preconditioner: Literal['identity', 'jacobi'] = 'jacobi'):
+                 slae_solver: CG | None = None):
         self.conditions = conditions
-        self.preconditioner = preconditioner
+        self.slae_solver = slae_solver or CG()
         self.n = n
 
     def solve(self):
@@ -41,11 +45,18 @@ class SimpleOdeFEM:
         solution, success = self._solve_slae()
         if not success:
             raise RuntimeError("Method did not converge")
-        self.solution = np.hstack((
-            self.conditions.u_0,
-            solution,
-            self.conditions.u_n
-        ))
+
+        self.solution = solution
+        if isinstance(self.conditions.left, float):
+            self.solution = np.hstack((
+                self.conditions.left,
+                self.solution
+            ))
+        if isinstance(self.conditions.right, float):
+            self.solution = np.hstack((
+                self.solution,
+                self.conditions.right
+            ))
 
     def _build_mesh(self):
         self.mesh, self.step = np.linspace(
@@ -74,14 +85,35 @@ class SimpleOdeFEM:
             F[elem_n] += f_elem
             F[elem_n + 1] += f_elem
 
-        F = F - self.conditions.u_0 * A[:, 0].toarray() - self.conditions.u_n * A[:, -1].toarray()
-        A = A[1:-1, 1:-1]
-        self.F: np.ndarray = F[1:-1].reshape(-1, 1)
+        A, F = self._build_boundaries(A, F)
         
         self.A: ssparse.csr_array = A.tocsr()
+        self.F: np.ndarray = F.reshape(-1, 1)
+
+    def _build_boundaries(self, A: ssparse.dok_array, F: np.ndarray):
+        # left boundary Neumann conditions
+        if isinstance(self.conditions.left, (tuple, list)):
+            A[0, 0] = self.conditions.left[0]
+            F[0] = self.conditions.left[1]
+        # Dirichlet conditions
+        else:
+            F = F - self.conditions.left * A[:, 0].toarray()
+            A = A[1:, 1:]
+            F = F[1:]
+
+        # right boundary Neumann conditions
+        if isinstance(self.conditions.right, (tuple, list)):
+            A[-1, -1] = self.conditions.right[0]
+            F[-1] = self.conditions.right[1]
+        # Dirichlet conditions
+        else:
+            F = F - self.conditions.right * A[:, -1].toarray()
+            A = A[:-1, :-1]
+            F = F[:-1]
+            
+        return A, F
 
     def _solve_slae(self):
-        self.slae_solver = CG(self.preconditioner)
         solution, exit_code = self.slae_solver.solve(self.A, self.F)
         return solution.flatten(), not exit_code
 
@@ -123,8 +155,8 @@ def main():
         f=lambda x: 3 * np.sin(x),
         x_0=0,
         x_n=1,
-        u_0=exact_func(0),
-        u_n=exact_func(1)
+        left=exact_func(0),
+        right=exact_func(1)
     )
     solver = SimpleOdeFEM(cond, 1000, 'jacobi')
     solver.solve()
