@@ -11,7 +11,7 @@ class Conditions:
     x_0: np.ndarray[float]
     v_0: np.ndarray[float]
     t_end: float
-    'Time until stop evaluations'
+    'Time until run evaluations'
     w: np.ndarray[float]
     'Self frequencies of springs, n values'
     k: np.ndarray[float]
