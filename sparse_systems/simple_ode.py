@@ -156,23 +156,25 @@ class MultigridFEMSolver(FEMSolver):
     def __init__(self, conditions: Conditions, n: int = 10,
                  slae_solver: CG | None = None,
                  n_layers: int = 2, cycle: Literal['V', 'F', 'W'] = 'V',
-                 smoother: preconditioners.PreconditionerBase | None = None):
+                 presmoother: preconditioners.PreconditionerBase | None = None,
+                 postsmoother: preconditioners.PreconditionerBase | None = None):
         super().__init__(conditions, n, slae_solver)
         self.n_layers = n_layers
         self.cycle = cycle
-        self.smoother = smoother or preconditioners.Jacobi(1, 1)
+        self.presmoother  = presmoother  or preconditioners.Identity()
+        self.postsmoother = postsmoother or preconditioners.Identity()
 
     def solve(self):
-        # n should divide by 2^n_layers - 1
-        n_mod = self.n % (2**(self.n_layers - 1))
-        if n_mod != 0:
-            self.n += (2**(self.n_layers - 1)) - n_mod
-            print('multigrid: number of elements corrected to', self.n)
+        # # n should divide by 2^n_layers - 1
+        # n_mod = self.n % (2**(self.n_layers - 1))
+        # if n_mod != 0:
+        #     self.n += (2**(self.n_layers - 1)) - n_mod
+        #     print('multigrid: number of elements corrected to', self.n)
 
         match self.cycle.lower():
             case 'v':
                 self.slae_solver.preconditioner = MultigridFEMSolver.VCycle(
-                    self, self.n_layers, self.smoother
+                    self, self.n_layers, self.presmoother, self.postsmoother
                 )
             # case 'f':
             #     self._solve_f_cycle()
@@ -182,83 +184,149 @@ class MultigridFEMSolver(FEMSolver):
                 raise ValueError("Unknown cycle type")
         super().solve()
 
+    class StandaloneSolver:
+        def __init__(self, preconditioner: preconditioners.PreconditionerBase | None = None,
+                     atol: float = 0, rtol: float = 1e-5, max_it: int | None = None, verbose=False):
+            self.preconditioner: preconditioners.PreconditionerBase = preconditioner or preconditioners.Identity()
+            self.atol = atol
+            self.rtol = rtol
+            self.max_it = max_it
+            self.verbose = verbose
+
+        def solve(self, A: ssparse.sparray, b: np.ndarray, x_init: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+            A: ssparse.csr_array = A.tocsr()
+            out_shape = x_init.shape if x_init else b.shape
+            b = b.reshape(-1, 1)
+            tol = max(self.rtol * np.linalg.norm(b), self.atol)
+            
+            u = x_init or np.zeros_like(b)
+            self.preconditioner.init(A)
+
+            it = 0
+            converged = False
+            while not self.max_it or it < self.max_it:
+                r = b - A.dot(u)
+
+                norm = np.linalg.norm(r)
+                if self.verbose: print(norm)
+                if norm <= tol:
+                    converged = True
+                    break
+
+                u += self.preconditioner.solve(r)
+
+                it += 1
+            self.iterations = it
+                
+            return u.reshape(out_shape), 0 if converged else it
+
     class VCycle(preconditioners.PreconditionerBase):
         def __init__(self, fem: FEM, n_layers: int,
-                     smoother: preconditioners.PreconditionerBase):
+                     presmoother: preconditioners.PreconditionerBase,
+                     postsmoother: preconditioners.PreconditionerBase):
             self.n_layers = n_layers
             self._layers = [fem]
-            self._smoothers = [copy(smoother) for _ in range(n_layers)]
+            self._presmoothers  = [copy(presmoother)  for _ in range(n_layers)]
+            self._postsmoothers = [copy(postsmoother) for _ in range(n_layers)]
 
         def init(self, A: ssparse.csc_array):
             # build meshes
             for _ in range(1, self.n_layers):
                 self._layers.append(FEM(
                     conditions=self._layers[-1].conditions,
-                    n=int(self._layers[-1].n // 2)
+                    n=int((self._layers[-1].n + 1) // 2)
                 ))
                 self._layers[-1].build_mesh()
+
+            # init restrictors
+            self.R = []
+            for layer in range(self.n_layers - 1):
+                n1, n2 = self._layers[layer].n + 1, self._layers[layer + 1].n + 1
+                R = ssparse.lil_array((n2, n1))
+                R.rows[0] = [0, 1]
+                R.data[0] = [3/4, 1/4]
+                for i in range(1, n2 - 1):
+                    idx = 2 * i
+                    R.rows[i] = [idx - 1, idx, idx + 1]
+                    R.data[i] = [1/4,     2/4, 1/4    ]
+                R.rows[-1] = [n1 - 2, n1 - 1]
+                R.data[-1] = [1/4, 3/4]
+                self.R.append(R.tocsr())
+
+            # init prolongators
+            self.P = []
+            for layer in range(self.n_layers - 1):
+                self.P.append((2 * self.R[layer].T).tocsr())
+                self.P[-1].data[0] = self.P[-1].data[-1] = 1
+                if self.P[-1].shape[0] % 2 == 0:
+                    self.P[-1].data[-4:] = [1, 0, 0, 1]
+
             # init smoothers
             for i in range(self.n_layers):
-                self._smoothers[i].init(self._layers[i].build_system()[0])
+                self._presmoothers[i].init(self._layers[i].build_system()[0])
+                self._postsmoothers[i].init(self._layers[i].build_system()[0])
 
         def solve(self, b: np.ndarray, x0: np.ndarray | None = None):
             if x0 is None: 
                 y = np.zeros_like(b)
             else:
                 y = x0.copy()
-            
-            # for i in range(1000):
-            #     y += self._solve_layer(np.zeros_like(y), b - self._layers[0].A.dot(y), 0)
-            #     print(np.linalg.norm(b - self._layers[0].A.dot(y)))
+
+            # graphical watch
+            # (b - self._layers[layer].A.dot(y)).flatten().tolist()
+            # (self._layers[layer].A.dot(e)).flatten().tolist()
+            # (self._prolongate(rhs, layer)).flatten().tolist()
 
             return self._solve_layer(y, b, 0)
 
         def _solve_layer(self, y: np.ndarray, b: np.ndarray, layer: int):
             # pre-smoothing
-            y = self._smoothers[layer].solve(b, x0=y)
+            y = self._presmoothers[layer].solve(b, x0=y)
 
             # calculate residual
-            r = (b - self._layers[layer].A.dot(y)).reshape(-1)
+            r = (b - self._layers[layer].A.dot(y))
 
             # restriction
-            rhs = np.zeros_like(self._layers[layer + 1].mesh)
-            # rhs[0], rhs[-1] = (3 * r[0] + r[1]) / 4, (3 * r[-1] + r[-2]) / 4
-            rhs[0], rhs[-1] = r[0], r[-1]
-            for i in range(1, len(rhs) - 1):
-                idx = 2 * i
-                rhs[i] = (r[idx - 1] + 2 * r[idx] + r[idx + 1]) / 4
+            rhs = self._restrict(r, layer + 1)
 
             # solving
             if layer == len(self._layers) - 2:
-                eps = scipy.sparse.linalg.spsolve(self._layers[-1].A, rhs)
+                eps = scipy.sparse.linalg.spsolve(self._layers[-1].A, rhs).reshape(-1, 1)
             else:
                 eps = self._solve_layer(np.zeros_like(rhs), rhs, layer + 1)
 
             # prolongation and correction
-            for i in range(len(y)):
-                idx = int(i // 2)
-                y[i] += eps[idx] if i % 2 == 0 else (eps[idx] + eps[idx + 1]) / 2
+            e = self._prolongate(eps, layer)
+            y += e
 
             # post-smoothing
-            y = self._smoothers[layer].solve(b, x0=y)
+            y = self._postsmoothers[layer].solve(b, x0=y)
             
             return y
+
+        def _restrict(self, v: np.ndarray, on_layer: int):
+            return self.R[on_layer - 1].dot(v)
+
+        def _prolongate(self, v: np.ndarray, on_layer: int):
+            return self.P[on_layer].dot(v)
 
 
 def test_multigrid(n1: float = 100, n2: float = 200):
     solver = MultigridFEMSolver(
         conditions=Conditions(
-            a=lambda x: 1,
+            a=lambda x: np.exp(2*x),
             b=lambda x: 0,
             f=lambda x: 4 * np.sin(3*x) + np.sin(x) * np.cos(2*x),
             x_0=0,
             x_n=1,
             left=[1, -2],
-            right=1
+            right=[1, -3]
         ),
-        slae_solver=CG(max_it=5000, verbose=False),
-        n_layers=3,
-        smoother=preconditioners.SSOR(2, 1)
+        slae_solver=MultigridFEMSolver.StandaloneSolver(max_it=5000, verbose=False),
+        # slae_solver=CG(max_it=5000, verbose=False),
+        n_layers=2,
+        presmoother=preconditioners.SSOR(4, 1),
+        postsmoother=preconditioners.SSOR(4, 1),
     )
 
     solver.n = n1
@@ -269,8 +337,9 @@ def test_multigrid(n1: float = 100, n2: float = 200):
     y2 = solver.solution[::2]
 
     print(np.linalg.norm(y1 - y2, np.inf) * n1**2)
-    print(np.argmax(abs(y1 - y2)))
+    print(solver.slae_solver.iterations)
 
+    solver.n_layers += 1
     solver.n = n2
     solver.solve()
     y1 = solver.solution
@@ -279,7 +348,7 @@ def test_multigrid(n1: float = 100, n2: float = 200):
     y2 = solver.solution[::2]
 
     print(np.linalg.norm(y1 - y2, np.inf) * n2**2)
-    print(np.argmax(abs(y1 - y2)))
+    print(solver.slae_solver.iterations)
 
 def test(n1: int = 100, n2: int = 200):
     solver = FEMSolver(
@@ -319,6 +388,73 @@ def test(n1: int = 100, n2: int = 200):
     print(np.linalg.norm(y1 - y2, np.inf) * n2**2)
     print(np.argmax(abs(y1 - y2)))
 
+def time_multigrid(n: int = 1000, loops: int = 10):
+    cond = Conditions(
+        a=lambda x: np.exp(2*x),
+        b=lambda x: 0,
+        f=lambda x: 4 * np.sin(3*x) + np.sin(x) * np.cos(2*x),
+        x_0=0,
+        x_n=1,
+        left=[1, -2],
+        right=[1, -3]
+    )
+    default = FEMSolver(
+        conditions=cond, n=n,
+        slae_solver=CG(
+            preconditioners.Jacobi(1, 1),
+            max_it=10 * n, verbose=False
+        )
+    )
+    multigrid = MultigridFEMSolver(
+        conditions=cond, n=n,
+        slae_solver=MultigridFEMSolver.StandaloneSolver(max_it=10 * n, verbose=False),
+        # slae_solver=CG(max_it=10 * n, verbose=False),
+        n_layers=2,
+        presmoother=preconditioners.Jacobi(2, 1),
+        postsmoother=preconditioners.SSOR(1, 1),
+    )
+
+    from timeit import timeit
+    from tqdm import tqdm
+
+    with tqdm(range(loops), 'default') as progress:
+        def progress_func():
+            default.solve()
+            progress.update()
+            progress.set_description(f'{default.slae_solver.iterations} its')
+        time = timeit(progress_func, number=loops)
+    print(f"\t {loops} loops, {time / loops * 1e3} ms average")
+
+    with tqdm(range(loops), 'multigrid') as progress:
+        def progress_func():
+            multigrid.solve()
+            progress.update()
+            progress.set_description(f'{multigrid.slae_solver.iterations} its')
+        time = timeit(progress_func, number=loops)
+    print(f"\t {loops} loops, {time / loops * 1e3} ms average")
+
+def main_multigrid():
+    solver = MultigridFEMSolver(
+        conditions=Conditions(
+            a=lambda x: np.exp(2*x),
+            b=lambda x: 0,
+            f=lambda x: 4 * np.sin(3*x) + np.sin(x) * np.cos(2*x),
+            x_0=0,
+            x_n=1,
+            left=[1, -2],
+            right=[1, -3]
+        ),
+        n=1000,
+        slae_solver=MultigridFEMSolver.StandaloneSolver(max_it=5000, verbose=False),
+        # slae_solver=CG(max_it=5000, verbose=False),
+        n_layers=2,
+        presmoother=preconditioners.SSOR(4, 1),
+        postsmoother=preconditioners.SSOR(4, 1),
+    )
+    solver.solve()
+
+    print(solver.slae_solver.iterations)
+
 def main():
     exact_func = lambda x: np.sin(x) * np.cos(2*x)
 
@@ -334,17 +470,19 @@ def main():
         ),
         n=100,
         slae_solver=CG(
-            preconditioners.SSOR(1, 1),
+            # preconditioners.Identity(),
+            preconditioners.Jacobi(4, 1),
             max_it=2000
         )
     )
     solver.solve()
 
     print(solver.slae_solver.iterations)
-    print(solver.solution)
 
 
 if __name__ == "__main__":
     # main()
+    main_multigrid()
     # test()
-    test_multigrid()
+    # test_multigrid()
+    # time_multigrid()

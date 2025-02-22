@@ -34,8 +34,6 @@ class CG:
         b = b.reshape(-1, 1)
 
         self.preconditioner.init(A)
-        
-        # return self.preconditioner.solve(b, x_init), 0
 
         tol = max(self.rtol * np.linalg.norm(b), self.atol)
         
